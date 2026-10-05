@@ -1276,6 +1276,110 @@ final class ChildChannelMultiplexerTests: XCTestCase {
         self.assertChannelClose(harness.flushedMessages.last, recipientChannel: 1)
     }
 
+    func testWeDontResizeTheWindowAfterLocalClosing() throws {
+        let harness = self.harnessForbiddingInboundChannels()
+        defer {
+            harness.finish()
+        }
+
+        var childChannel: Channel?
+        harness.multiplexer.createChildChannel(channelType: .session) { channel, _ in
+            childChannel = channel
+            return channel.setOption(ChannelOptions.autoRead, value: false)
+        }
+
+        guard let channel = childChannel else {
+            XCTFail("Did not create child channel")
+            return
+        }
+
+        let channelID = self.assertChannelOpen(harness.flushedMessages.first)
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.openConfirmation(originalChannelID: channelID!, peerChannelID: 1)))
+
+        let buffer = ByteBuffer.bigBuffer
+
+        channel.close(promise: nil)
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+        self.assertChannelClose(harness.flushedMessages.last, recipientChannel: 1)
+
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.data(peerChannelID: channelID!,
+                                                                          data: buffer.getSlice(at: buffer.readerIndex, length: 1)!)))
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.data(peerChannelID: channelID!,
+                                                                          data: buffer.getSlice(at: buffer.readerIndex, length: SSHPacketParser.defaultMaximumPacketSize >> 1)!)))
+
+        channel.read()
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+    }
+
+    func testAutoReadDoesntResizeTheWindowAfterLocalClosing() throws {
+        let harness = self.harnessForbiddingInboundChannels()
+        defer {
+            harness.finish()
+        }
+
+        var childChannel: Channel?
+        harness.multiplexer.createChildChannel(channelType: .session) { channel, _ in
+            childChannel = channel
+            return channel.eventLoop.makeSucceededFuture(())
+        }
+
+        guard let channel = childChannel else {
+            XCTFail("Did not create child channel")
+            return
+        }
+
+        let channelID = self.assertChannelOpen(harness.flushedMessages.first)
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.openConfirmation(originalChannelID: channelID!, peerChannelID: 1)))
+
+        let buffer = ByteBuffer.bigBuffer
+
+        channel.close(promise: nil)
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+        self.assertChannelClose(harness.flushedMessages.last, recipientChannel: 1)
+
+        // One parent read burst: data lands, then readComplete delivers it.
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.data(peerChannelID: channelID!,
+                                                                          data: buffer.getSlice(at: buffer.readerIndex, length: 1)!)))
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.data(peerChannelID: channelID!,
+                                                                          data: buffer.getSlice(at: buffer.readerIndex, length: SSHPacketParser.defaultMaximumPacketSize >> 1)!)))
+        harness.multiplexer.parentChannelReadComplete()
+
+        XCTAssertEqual(harness.flushedMessages.count, 2)
+    }
+
+    func testRemoteCloseWithBufferedDataThenRead() throws {
+        let harness = self.harnessForbiddingInboundChannels()
+        defer {
+            harness.finish()
+        }
+
+        var childChannel: Channel?
+        harness.multiplexer.createChildChannel(channelType: .session) { channel, _ in
+            childChannel = channel
+            return channel.setOption(ChannelOptions.autoRead, value: false)
+        }
+
+        guard let channel = childChannel else {
+            XCTFail("Did not create child channel")
+            return
+        }
+
+        let channelID = self.assertChannelOpen(harness.flushedMessages.first)
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.openConfirmation(originalChannelID: channelID!, peerChannelID: 1)))
+
+        let buffer = ByteBuffer.bigBuffer
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.data(peerChannelID: channelID!,
+                                                                          data: buffer.getSlice(at: buffer.readerIndex, length: (SSHPacketParser.defaultMaximumPacketSize >> 1) + 1)!)))
+        XCTAssertEqual(harness.flushedMessages.count, 1)
+
+        XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.close(peerChannelID: channelID!)))
+        print("REMOTECLOSE-VARIANT flushed after close: \(harness.flushedMessages)")
+
+        channel.read()
+        print("REMOTECLOSE-VARIANT flushed after read: \(harness.flushedMessages)")
+        XCTAssertFalse(harness.flushedMessages.contains { if case .channelWindowAdjust = $0 { return true } else { return false } })
+    }
+
     func testRespectingMaxMessageSize() throws {
         let harness = self.harnessForbiddingInboundChannels()
         defer {
