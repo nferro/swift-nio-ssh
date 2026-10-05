@@ -1373,10 +1373,8 @@ final class ChildChannelMultiplexerTests: XCTestCase {
         XCTAssertEqual(harness.flushedMessages.count, 1)
 
         XCTAssertNoThrow(try harness.multiplexer.receiveMessage(self.close(peerChannelID: channelID!)))
-        print("REMOTECLOSE-VARIANT flushed after close: \(harness.flushedMessages)")
 
         channel.read()
-        print("REMOTECLOSE-VARIANT flushed after read: \(harness.flushedMessages)")
         XCTAssertFalse(harness.flushedMessages.contains { if case .channelWindowAdjust = $0 { return true } else { return false } })
     }
 
